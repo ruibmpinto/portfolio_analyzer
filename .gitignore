@@ -55,3 +55,8 @@ Thumbs.db
 # Cache
 .cache/
 *.cache
+
+# Private portfolio data — the real ticker categorization
+# reveals allocation strategy. Ship the .example.json stub
+# in git as the schema reference; users copy it locally.
+data/ticker_categories.json

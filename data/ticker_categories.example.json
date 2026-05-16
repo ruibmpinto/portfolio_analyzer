@@ -1,0 +1,8 @@
+{
+    "_comment": "Schema reference for data/ticker_categories.json (gitignored). Copy this file to data/ticker_categories.json and replace the entries with the tickers you actually hold. The rebalancer and dashboard API read it at startup. Allowed values: 'core', 'speculative', 'commodity'.",
+
+    "SPY": "core",
+    "QQQ": "core",
+    "TSLA": "speculative",
+    "GLD": "commodity"
+}

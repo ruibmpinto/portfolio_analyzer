@@ -73,6 +73,7 @@ def _latest_csv(
         directory: pathlib.Path,
         pattern: str) -> Optional[pathlib.Path]:
     """Newest file in `directory` matching `pattern`."""
+    
     if not directory.exists():
         return None
     matches = sorted(directory.glob(pattern))

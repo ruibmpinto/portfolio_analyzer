@@ -5,6 +5,7 @@ Orchestrates all analysis modules to provide comprehensive
 portfolio analytics through a simple API.
 """
 
+import pathlib
 import threading
 import warnings
 import pandas as pd
@@ -37,6 +38,14 @@ except ImportError:
     class YFPricesMissingError(Exception):
         """Stub when yfinance is not installed."""
         pass
+
+
+def _fx_cache_path(pair: str) -> pathlib.Path:
+    """Resolve the on-disk cache path for an FX pair."""
+    # Anchor at the repo root so the cache is shared regardless
+    # of the caller's cwd.
+    repo_root = pathlib.Path(__file__).resolve().parents[3]
+    return repo_root / 'data' / 'cache' / 'fx' / f'{pair}.pkl'
 
 
 # Listing-currency fallback for common benchmarks. Used when
@@ -115,6 +124,10 @@ class PortfolioAnalyzer:
         self.data_provider = data_provider
         # Reporting currency (everything downstream is in this)
         self.base_currency = base_currency.upper()
+        # Max age (days) of an FX cache file before refresh.
+        self.fx_cache_max_age_days = 3
+        # Fixed FX-cache refresh anchor (covers portfolios from 2024 on).
+        self.fx_cache_history_start = datetime(2024, 1, 1)
 
         # Initialize modules
         self.loader = CSVLoader()
@@ -740,10 +753,12 @@ class PortfolioAnalyzer:
                 try:
                     # Daily OHLCV bars for this ticker (split-adjusted)
                     local_prices[ticker] = (
-                        self.data_provider.get_price_history(ticker, start, end))
+                        self.data_provider.get_price_history(
+                            ticker, start, end))
                     # Per-ticker split history; aligns share counts
                     # with yfinance's auto-adjusted prices.
-                    splits[ticker] = self.data_provider.get_split_history(ticker)
+                    splits[ticker] = self.data_provider.get_split_history(
+                        ticker)
                     # Per-ticker dividend deflation factors; lets
                     # _calculate_value undo yfinance's dividend
                     # adjustment on past closes.
@@ -815,29 +830,93 @@ class PortfolioAnalyzer:
 
     def _load_fx_series(self, currency: str, start, end) -> pd.Series:
         """
-        Fetch one FX pair from the data provider, returning an
-        empty Series on a missing-data failure so the absence
-        propagates as a clear error at use time.
+        Load an FX pair backed by an on-disk cache.
 
-        Rate-limit errors are re-raised so the caller can back
-        off rather than silently producing wrong values.
+        Reads ``data/cache/fx/<pair>.pkl`` when it exists and is
+        no older than ``fx_cache_max_age_days``. Otherwise
+        fetches the series from the data provider, writes it to
+        disk, and returns it. When the network fetch fails and
+        a stale cached copy exists, the stale copy is used with
+        a warning rather than failing the call.
+
+        Args:
+            currency: Source currency code.
+            start, end: Date bounds passed to the data provider
+                on a fresh fetch. The cached series is returned
+                in full; downstream callers slice in
+                ``_native_to_base``.
+
+        Returns:
+            Daily FX series (base per native) for ``currency``.
+            Empty Series when no conversion is needed.
+
+        Raises:
+            RuntimeError: When the cache is missing and the
+                network fetch also fails (no usable source).
+            YFRateLimitError: Re-raised so callers can back off.
         """
-        # Short-circuit if already populated in the cache
+        # Same-currency conversion: no series needed
         if currency == self.base_currency:
             return pd.Series(dtype=float)
-        
-        pair = f"{currency}{self.base_currency}=X"
+        # Currency pair in yfinance format
+        pair = f'{currency}{self.base_currency}=X'
+        cache_path = _fx_cache_path(pair)
+
+        # Cache hit: skip the network entirely
+        if cache_path.exists():
+            age_days = (
+                datetime.now() - datetime.fromtimestamp(
+                    cache_path.stat().st_mtime)).days
+            # If cache is recent and non-empty,
+            # return without hitting the network
+            if age_days <= self.fx_cache_max_age_days:
+                cached = pd.read_pickle(cache_path)
+                if not cached.empty:
+                    return cached
+
+        # Cache missing or stale: refresh from self.fx_cache_history_start.
         try:
-            return self.data_provider.get_price_history(pair, start, end)
+            series = self.data_provider.get_price_history(
+                pair, self.fx_cache_history_start, end)
         except YFRateLimitError:
+            warnings.warn(f'yfinance rate-limited on FX {pair}.')
             raise
-        except Exception as e:
+        except Exception as exc:
+            # Network failed; fall back to stale cache if any
+            if cache_path.exists():
+                warnings.warn(
+                    f'FX refresh failed for {pair} '
+                    f'({type(exc).__name__}); using stale cache.')
+                return pd.read_pickle(cache_path)
+            raise RuntimeError(
+                f'FX history unavailable for '
+                f'{currency}->{self.base_currency}: '
+                f'{type(exc).__name__}: {exc}') from exc
+        
+        # Empty result also counts as a failed refresh
+        if series.empty:
+            if cache_path.exists():
+                warnings.warn(
+                    f'FX refresh returned empty for {pair}; '
+                    f'using stale cache.')
+                return pd.read_pickle(cache_path)
+            raise RuntimeError(
+                f'FX history unavailable for '
+                f'{currency}->{self.base_currency} '
+                f'(provider returned empty series).')
+        
+        # Persist for the next call; cache-write failures are
+        # non-fatal since the in-memory series is still valid.
+        try:
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            series.to_pickle(cache_path)
+        except Exception as exc:
             warnings.warn(
-                f"FX history unavailable for "
-                f"{currency}->{self.base_currency} "
-                f"({type(e).__name__}); positions in "
-                f"{currency} will fail at conversion time.")
-            return pd.Series(dtype=float)
+                f'FX cache write failed for {pair} '
+                f'({type(exc).__name__}); proceeding without '
+                f'persisting.')
+        # Return
+        return series
 
     def _native_to_base(self, amount: float, currency: str, date) -> float:
         """

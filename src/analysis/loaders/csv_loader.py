@@ -81,35 +81,6 @@ def _latest_csv(
     return matches[-1] if matches else None
 
 
-def _fee_cell(value, column: str, order_id) -> float:
-    """Parse a Degiro fee column.
-
-    Genuinely-blank or NaN cells legitimately mean "no fee on
-    this fill" (the broker stamps fees on one of the fills when
-    an order is partially filled across rows; the others are
-    blank). Any other unparseable value is a data-format
-    surprise and raises so we never silently swallow it.
-    """
-    if value is None:
-        return 0.0
-    
-    try:
-        if pd.isna(value):
-            return 0.0
-    except TypeError:
-        pass
-    
-    if isinstance(value, str) and value.strip() == '':
-        return 0.0
-    
-    try:
-        return float(value)
-    except (TypeError, ValueError) as exc:
-        raise RuntimeError(
-            f'Unparseable {column!r} value {value!r} on '
-            f'Order ID {order_id!r}') from exc
-
-
 def load_isin_to_ticker(
         path: Optional[pathlib.Path] = None) -> Dict[str, Optional[str]]:
     """Load ISIN -> ticker map from JSON.
@@ -186,6 +157,35 @@ class CSVLoader:
         'Trades': ('trade', None),
         'Dividends': ('income', 'dividend'),
         'Withholding Tax': ('income', 'tax')}
+
+    @staticmethod
+    def _fee_cell(value, column: str, order_id) -> float:
+        """Parse a Degiro fee column.
+
+        Genuinely-blank or NaN cells legitimately mean "no fee on
+        this fill" (the broker stamps fees on one of the fills when
+        an order is partially filled across rows; the others are
+        blank). Any other unparseable value is a data-format
+        surprise and raises so we never silently swallow it.
+        """
+        if value is None:
+            return 0.0
+
+        try:
+            if pd.isna(value):
+                return 0.0
+        except TypeError:
+            pass
+
+        if isinstance(value, str) and value.strip() == '':
+            return 0.0
+
+        try:
+            return float(value)
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError(
+                f'Unparseable {column!r} value {value!r} on '
+                f'Order ID {order_id!r}') from exc
 
     def load_csv_degiro(
             self,
@@ -409,13 +409,13 @@ class CSVLoader:
             signs.add(1 if qty > 0 else -1)
             total_qty += qty
             gross_native += abs(qty) * price
-            fee_chf += _fee_cell(
+            fee_chf += self._fee_cell(
                 row.get(
                     'Transaction and/or third party fees CHF'),
                 'Transaction and/or third party fees CHF', oid)
-            autofx_chf += _fee_cell(
+            autofx_chf += self._fee_cell(
                 row.get('AutoFX Fee'), 'AutoFX Fee', oid)
-            xr = _fee_cell(
+            xr = self._fee_cell(
                 row.get('Exchange rate'), 'Exchange rate', oid)
             if xr > 0:
                 # All fills in an order share one trade-time rate

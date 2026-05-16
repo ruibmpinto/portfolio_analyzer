@@ -120,16 +120,19 @@ export default function Strategies() {
                 <KpiCard
                     label="Median terminal NAV"
                     value={fmtCHF(current.mc_summary.terminal_p50)}
+                    sub={`± ${fmtCHF(current.mc_summary.terminal_se_chf)} SE`}
                     color={cur.main}
                 />
                 <KpiCard
-                    label="Mean ann. return"
+                    label="Mean P&L"
                     value={fmtPct(current.mc_summary.mu_ann_pct)}
+                    sub={`± ${fmtPct(current.mc_summary.mu_se_pct)} SE`}
                     color={palette.success}
                 />
                 <KpiCard
                     label="P(Loss)"
                     value={fmtPct(current.mc_summary.prob_loss * 100)}
+                    sub={`± ${fmtPct(current.mc_summary.prob_loss_se * 100)} SE`}
                     color={
                         current.mc_summary.prob_loss > 0.25
                             ? palette.danger
@@ -149,10 +152,10 @@ export default function Strategies() {
                     color={palette.warn}
                 />
                 <KpiCard
-                    label="3Y CAGR forecast"
-                    value={fmtPct(current.cagr_forecast_pct)}
-                    color={palette.accent}
-                    sub={`coverage ${fmtPct(current.cagr_forecast_coverage * 100, 0)}`}
+                    label="MC paths"
+                    value={(current.mc_summary.n_paths || 0).toLocaleString()}
+                    sub={`${current.mc_summary.horizon_days} trading days`}
+                    color={palette.textMuted}
                 />
             </div>
 
@@ -202,6 +205,106 @@ export default function Strategies() {
             )}
 
             <ReasoningCard strategy={current} />
+            <MethodologyCard mc={data?.mc} current={current} />
+        </div>
+    );
+}
+
+function MethodologyCard({ mc, current }) {
+    if (!mc?.methodology) return null;
+    const m = mc.methodology;
+    const cagrPct = current?.cagr_forecast_pct;
+    const coverage = current?.cagr_forecast_coverage;
+    return (
+        <div
+            style={{
+                background: palette.card,
+                borderRadius: 10,
+                padding: 16,
+                marginTop: 12,
+                color: palette.textMuted,
+                fontSize: 12,
+                lineHeight: 1.5,
+                borderLeft: `3px solid ${palette.accent}`,
+            }}
+        >
+            <div
+                style={{
+                    color: palette.textFaint,
+                    fontSize: 11,
+                    marginBottom: 8,
+                    textTransform: "uppercase",
+                    letterSpacing: 0.5,
+                }}
+            >
+                Monte Carlo methodology
+            </div>
+            <div style={{ marginBottom: 8 }}>
+                <strong>Run config:</strong>{" "}
+                {(mc.n_paths || 0).toLocaleString()} paths ·{" "}
+                {mc.horizon_days} trading days ·{" "}
+                CHF {mc.monthly_contribution_chf}/month contribution
+                {cagrPct !== undefined && (
+                    <>
+                        {" · "}
+                        3Y CAGR forecast {fmtPct(cagrPct)}
+                        {coverage !== undefined && (
+                            <> (coverage {fmtPct(coverage * 100, 0)})</>
+                        )}
+                    </>
+                )}
+            </div>
+            <div style={{ marginBottom: 8 }}>{m.summary}</div>
+            <div style={{ marginBottom: 4 }}>
+                <strong>Distributions</strong>
+            </div>
+            <ul style={{ margin: 0, paddingLeft: 18, marginBottom: 8 }}>
+                {m.distributions.map(([label, eq], i) => (
+                    <li key={i}>
+                        {label}:{" "}
+                        <code style={{ color: palette.textFaint }}>{eq}</code>
+                    </li>
+                ))}
+            </ul>
+            <div style={{ marginBottom: 4 }}>
+                <strong>Equations</strong>
+            </div>
+            <ul style={{ margin: 0, paddingLeft: 18, marginBottom: 8 }}>
+                {m.equations.map(([label, eq], i) => (
+                    <li key={i}>
+                        {label}:{" "}
+                        <code style={{ color: palette.textFaint }}>{eq}</code>
+                    </li>
+                ))}
+            </ul>
+            <div style={{ marginBottom: 4 }}>
+                <strong>Parameter clips</strong>
+            </div>
+            <ul style={{ margin: 0, paddingLeft: 18 }}>
+                <li>
+                    Student-t df:{" "}
+                    [{m.parameters.student_t_df_clip[0]},{" "}
+                    {m.parameters.student_t_df_clip[1]}]
+                </li>
+                <li>
+                    Clayton theta:{" "}
+                    [{m.parameters.clayton_theta_clip[0]},{" "}
+                    {m.parameters.clayton_theta_clip[1]}]
+                </li>
+                <li>
+                    Kendall tau:{" "}
+                    [{m.parameters.kendall_tau_clip[0]},{" "}
+                    {m.parameters.kendall_tau_clip[1]}]
+                </li>
+                <li>
+                    Min history to fit:{" "}
+                    {m.parameters.min_history_for_fit_days} days
+                </li>
+                <li>
+                    Trading days / year:{" "}
+                    {m.parameters.trading_days_per_year}
+                </li>
+            </ul>
         </div>
     );
 }

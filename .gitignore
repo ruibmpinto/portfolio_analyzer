@@ -60,3 +60,6 @@ Thumbs.db
 # reveals allocation strategy. Ship the .example.json stub
 # in git as the schema reference; users copy it locally.
 data/ticker_categories.json
+
+# Local FX cache populated by analyzer._load_fx_series.
+data/cache/fx/

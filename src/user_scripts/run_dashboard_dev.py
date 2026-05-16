@@ -12,6 +12,7 @@ Run from the project root:
 
 import os
 import pathlib
+import shutil
 import signal
 import subprocess
 import sys
@@ -20,6 +21,12 @@ import sys
 api_port = 8000
 vite_port = 5173
 root_dir = pathlib.Path(__file__).resolve().parents[2]
+
+
+def _clear_pyc(base: pathlib.Path):
+    """Remove every __pycache__ under `base`; stale bytecode bites."""
+    for path in base.rglob('__pycache__'):
+        shutil.rmtree(path, ignore_errors=True)
 
 
 def _free_port(port):
@@ -40,6 +47,7 @@ def _free_port(port):
 
 def main():
     """Spawn sidecar, run Vite in foreground, clean up on exit."""
+    _clear_pyc(root_dir / 'src')
     _free_port(api_port)
     _free_port(vite_port)
 

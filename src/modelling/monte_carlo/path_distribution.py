@@ -136,6 +136,27 @@ class PathDistribution:
         var_5 = float(np.percentile(pnl_pct, 5))
         tail = pnl_pct[pnl_pct <= var_5]
         cvar_5 = float(tail.mean()) if tail.size else var_5
+        # Headline-stat SEs: SE(mean)=sigma/sqrt(N), SE(p)=sqrt(p(1-p)/N).
+        n_paths = int(self.paths.shape[0])
+        if n_paths > 1:
+            sqrt_n = float(np.sqrt(n_paths))
+            mu_se_pct = float(pnl_pct.std(ddof=1) / sqrt_n)
+            terminal_se_chf = float(
+                terminal.std(ddof=1) / sqrt_n)
+            term_ret = (
+                terminal / self.initial_nav_chf - 1.0)
+            expected_terminal_return_se = float(
+                term_ret.std(ddof=1) / sqrt_n)
+        else:
+            mu_se_pct = 0.0
+            terminal_se_chf = 0.0
+            expected_terminal_return_se = 0.0
+        prob_loss = float((terminal < invested).mean())
+        if n_paths > 0:
+            prob_loss_se = float(np.sqrt(
+                prob_loss * (1.0 - prob_loss) / n_paths))
+        else:
+            prob_loss_se = 0.0
         if self.cumulative_costs_chf is None:
             cost_p50 = 0.0
             cost_p95 = 0.0
@@ -157,20 +178,26 @@ class PathDistribution:
                 float(self.cumulative_contributions_chf),
             'total_invested_chf': float(invested),
             'horizon_days': int(self.horizon_days),
-            'n_paths': int(self.paths.shape[0]),
+            'n_paths': n_paths,
             'terminal_p5': float(np.quantile(terminal, 0.05)),
             'terminal_p50': float(np.quantile(terminal, 0.5)),
             'terminal_p95': float(np.quantile(terminal, 0.95)),
+            'terminal_mean_chf': float(terminal.mean()),
+            'terminal_se_chf': terminal_se_chf,
             'expected_terminal_return':
                 self.expected_terminal_return(),
+            'expected_terminal_return_se':
+                expected_terminal_return_se,
             'max_drawdown_p5': float(np.quantile(dd, 0.05)),
             'max_drawdown_p50': float(np.quantile(dd, 0.5)),
             'max_drawdown_p95': float(np.quantile(dd, 0.95)),
-            'prob_loss': float((terminal < invested).mean()),
+            'prob_loss': prob_loss,
+            'prob_loss_se': prob_loss_se,
             'cumulative_cost_chf_p50': cost_p50,
             'cumulative_cost_chf_p95': cost_p95,
             'annual_cost_drag_bps': float(drag_bps),
             'mu_ann_pct': float(pnl_pct.mean()),
+            'mu_se_pct': mu_se_pct,
             'sigma_ann_pct': float(pnl_pct.std()),
             'var_5_pct': var_5,
             'cvar_5_pct': cvar_5,

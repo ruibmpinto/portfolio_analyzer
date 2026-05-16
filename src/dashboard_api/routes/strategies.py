@@ -29,6 +29,7 @@ from src.dashboard_api import config
 from src.dashboard_api.services import strategy_cagr as cagr_mod
 from src.modelling.monte_carlo import (
     MonteCarloEngine, ibkr_default_cost_model)
+from src.modelling.monte_carlo import engine as mc_engine
 from src.modelling.rebalancing import (
     Rebalancer, get_strategy)
 from src.shared.constraints import RebalanceConstraints
@@ -83,6 +84,57 @@ def _build_payload(ctx) -> Dict:
             'horizon_days': config.mc_horizon_days,
             'monthly_contribution_chf':
                 config.mc_monthly_contribution_chf,
+            'methodology': _mc_methodology(),
+        },
+    }
+
+
+def _mc_methodology() -> Dict:
+    """Static description of the MC model + equations + params."""
+    # Single source of truth for the UI's methodology panel.
+    return {
+        'summary': (
+            'Clayton-copula joint sampling of daily returns. '
+            'Each ticker has a Student-t marginal whose '
+            'location is James-Stein shrunk toward a constant '
+            'anchor return. Cash earns a deterministic daily '
+            'rate. Transaction costs are applied at t=0 and on '
+            'every rebalance step.'),
+        'distributions': [
+            ('Per-ticker daily return',
+             'r_{t,i} ~ Student-t(nu_i, mu_i, sigma_i), '
+             'fit by MLE on historical returns'),
+            ('Joint dependence',
+             'C_theta(u_1,...,u_d): Clayton copula on the '
+             'uniform-transformed marginals'),
+            ('Cash growth',
+             'C_{t+1} = C_t * (1 + r_cash / 252), '
+             'deterministic'),
+        ],
+        'equations': [
+            ('NAV update',
+             'V_{t+1} = sum_i H_{t,i} * (1 + r_{t,i}) + C_{t+1}'),
+            ('James-Stein shrinkage',
+             'mu_i_hat = (1 - w) * mean(r_i) + w * mu_anchor'),
+            ('Clayton theta from Kendall tau',
+             'theta = 2 * tau / (1 - tau), '
+             'tau = median pairwise Kendall tau'),
+            ('Standard error of mean return',
+             'SE(mean) = sigma / sqrt(N_paths)'),
+            ('Standard error of probability',
+             'SE(p_hat) = sqrt(p * (1 - p) / N_paths)'),
+        ],
+        'parameters': {
+            'student_t_df_clip':
+                [mc_engine.df_floor, mc_engine.df_ceil],
+            'clayton_theta_clip':
+                [mc_engine.theta_floor, mc_engine.theta_ceil],
+            'kendall_tau_clip':
+                [mc_engine.tau_floor, mc_engine.tau_ceil],
+            'min_history_for_fit_days':
+                mc_engine.min_history_for_fit,
+            'trading_days_per_year':
+                mc_engine.trading_days_per_year,
         },
     }
 

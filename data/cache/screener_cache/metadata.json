@@ -1,0 +1,17 @@
+{
+  "NASDAQ": {
+    "count": 5253,
+    "updated": "2025-12-26T19:20:16.107905",
+    "source": "NASDAQ FTP"
+  },
+  "NYSE": {
+    "count": 2891,
+    "updated": "2025-12-26T19:20:16.767881",
+    "source": "NASDAQ FTP"
+  },
+  "AMEX": {
+    "count": 308,
+    "updated": "2025-12-26T19:20:17.439809",
+    "source": "NASDAQ FTP"
+  }
+}

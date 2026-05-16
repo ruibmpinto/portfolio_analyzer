@@ -1,0 +1,8 @@
+{
+    "_comment": "Per-ticker portfolio category tag, consumed by the rebalancer and the dashboard API. Edit this file with the tickers you actually hold; the entries below are illustrative stubs only. Allowed values: 'core', 'speculative', 'commodity'.",
+
+    "SPY": "core",
+    "QQQ": "core",
+    "TSLA": "speculative",
+    "GLD": "commodity"
+}

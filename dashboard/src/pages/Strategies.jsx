@@ -411,6 +411,7 @@ function ActionsTable({ title, rows, color }) {
                                     "Cost (CHF)",
                                     "Current %",
                                     "Target %",
+                                    "Achievable %",
                                     "Note",
                                 ].map((h) => (
                                     <th
@@ -480,6 +481,14 @@ function ActionsTable({ title, rows, color }) {
                                         }}
                                     >
                                         {fmtPct(r.target_wt_pct)}
+                                    </td>
+                                    <td
+                                        style={{
+                                            padding: "6px 12px",
+                                            color: palette.textMuted,
+                                        }}
+                                    >
+                                        {fmtPct(r.achievable_wt_pct)}
                                     </td>
                                     <td
                                         style={{

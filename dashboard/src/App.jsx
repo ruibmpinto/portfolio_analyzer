@@ -6,7 +6,10 @@ import { useState } from "react";
 import Holdings from "./pages/Holdings.jsx";
 import Overview from "./pages/Overview.jsx";
 import Ratios from "./pages/Ratios.jsx";
+import Rules from "./pages/Rules.jsx";
+import SafeHarbor from "./pages/SafeHarbor.jsx";
 import Sells from "./pages/Sells.jsx";
+import Stops from "./pages/Stops.jsx";
 import Strategies from "./pages/Strategies.jsx";
 import { useApiPort } from "./hooks/useApiPort.js";
 import { apiPost } from "./api/client.js";
@@ -18,6 +21,9 @@ const pages = [
     { id: "holdings", label: "Holdings", Component: Holdings },
     { id: "strategies", label: "Strategies", Component: Strategies },
     { id: "sells", label: "Sells", Component: Sells },
+    { id: "stops", label: "Stops", Component: Stops },
+    { id: "rules", label: "Rules", Component: Rules },
+    { id: "safe_harbor", label: "Safe Harbor", Component: SafeHarbor },
 ];
 
 export default function App() {

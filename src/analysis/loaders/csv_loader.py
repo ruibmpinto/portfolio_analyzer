@@ -287,10 +287,12 @@ class CSVLoader:
         self._validate_columns(
             df,
             required=self.degiro_transactions_required_columns)
+        
         # Drop trailing blank rows and parse dates
         df = df.dropna(subset=['Date'])
         df['Date'] = pd.to_datetime(
             df['Date'], format='%d-%m-%Y')
+        
         # If Order ID is empty, pull it from the trailing
         # column (absorbs Degiro's mid-export schema drift)
         df['Order ID'] = df['Order ID'].fillna(
@@ -300,12 +302,14 @@ class CSVLoader:
                      & (df['Local value'].fillna(0) == 0)
                      & df['Order ID'].isna())
         df = df[~tombstone]
+        
         # Remaining empty Order IDs are corporate-action rows;
         # assign synthetic IDs so each becomes its own group
         df['Order ID'] = df['Order ID'].astype(object)
         empty = df['Order ID'].isna()
         df.loc[empty, 'Order ID'] = (
             'synth_' + df.index[empty].astype(str))
+        
         # Emit one Transaction per Order ID group
         out: List[Transaction] = []
         for oid, group in df.groupby('Order ID', sort=False):
@@ -347,7 +351,7 @@ class CSVLoader:
         # Explicitly-null mapping signals "skip" (e.g. cash)
         if ticker is None:
             return None
-        # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        
         # The trade currency lives in the unnamed column right
         # after Price. pandas auto-renames blank headers to
         # 'Unnamed: <n>' but the position is stable.
@@ -355,7 +359,7 @@ class CSVLoader:
         price_pos = cols.index('Price')
         local_value_pos = cols.index('Local value')
         ccy_col = cols[price_pos + 1]
-        # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        
         # Accumulators for the group aggregation pass
         currencies = set()
         signs = set()
@@ -367,6 +371,7 @@ class CSVLoader:
         oid = anchor['Order ID']
         local_value_col = cols[local_value_pos]
         local_ccy_col = cols[local_value_pos + 1]
+
         # Iterate every fill row inside this Order ID
         for _, row in group.iterrows():
             raw_qty = row['Quantity']
@@ -433,7 +438,7 @@ class CSVLoader:
         # 3.833 of the GS High Yield fund) survive the round-trip.
         amount = abs(float(total_qty))
         price = gross_native / abs(total_qty) if total_qty else 0.0
-        # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        
         # Convert CHF fees back to native currency so the
         # Transaction's fee fields are in `currency`.
         if currency == 'CHF' or exchange_rate <= 0:
@@ -442,6 +447,7 @@ class CSVLoader:
         else:
             fee_native = abs(fee_chf) / exchange_rate
             autofx_native = abs(autofx_chf) / exchange_rate
+        # Return
         return Transaction(
             ticker=ticker,
             operation=operation,
@@ -466,9 +472,11 @@ class CSVLoader:
         self._validate_columns(
             df,
             required=self.degiro_statement_required_columns)
+        
         # Drop trailing blank rows and parse dates
         df = df.dropna(subset=['Date'])
         df['Date'] = pd.to_datetime(df['Date'], format='%d-%m-%Y')
+
         # The statement's two unnamed columns carry the change
         # amount and balance amount. Rename for clarity.
         rename = {}
@@ -480,7 +488,7 @@ class CSVLoader:
                     rename[col] = 'Balance Amount'
         if rename:
             df = df.rename(columns=rename)
-        # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+            
         # Emit one Transaction per income / corporate-action row
         out: List[Transaction] = []
         for _, row in df.iterrows():
@@ -499,6 +507,7 @@ class CSVLoader:
                 continue
             if trans is not None:
                 out.append(trans)
+        
         return out
 
     
@@ -578,6 +587,7 @@ class CSVLoader:
             price = abs(amount_value)
         else:
             price = -abs(amount_value)
+
         # Return
         return Transaction(
             ticker=ticker,
@@ -787,6 +797,7 @@ class CSVLoader:
             quantity = int(quantity_float)
         else:
             quantity = quantity_float
+
         # Select operation based on quantity sign:
         # positive = buy, negative = sell.
         if quantity > 0:
@@ -856,6 +867,7 @@ class CSVLoader:
         price = float(fields['Amount'])
         # Trade currency from the IBKR row (USD / CHF / EUR ...)
         currency = fields['Currency'].strip().upper()
+        
         # Return
         return Transaction(
             ticker=ticker,

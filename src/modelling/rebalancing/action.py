@@ -40,8 +40,16 @@ class RebalancingAction:
             target cash CHF magnitude. Always non-negative.
         current_wt_pct: Position's weight before the action,
             in percent.
-        target_wt_pct: Position's target weight after the
-            rebalance, in percent.
+        target_wt_pct: Strategy's aspirational target weight, in
+            percent. What the strategy wants; not necessarily
+            reachable when capital is limited.
+        achievable_wt_pct: Post-trade weight this action actually
+            reaches, in percent, against the post-trade NAV
+            (holdings + new capital). Equals target_wt_pct only
+            when the action is fully funded; falls short when the
+            buy pool cannot cover the gap. The rebalancer always
+            sets this explicitly; the 0.0 default exists only for
+            ad-hoc/test constructions.
         note: Free-form annotation (e.g.
             'Only if held >6 months' for REDUCE actions,
             'Cash reserve' for CASH actions).
@@ -54,6 +62,7 @@ class RebalancingAction:
     current_wt_pct: float
     target_wt_pct: float
     note: str
+    achievable_wt_pct: float = 0.0
 
     def __post_init__(self):
         if self.action not in valid_actions:

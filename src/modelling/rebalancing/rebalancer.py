@@ -214,11 +214,19 @@ class Rebalancer:
             target_value = target_w * target_total
             deltas.append({
                 'ticker': ticker,
+                'current_value': current_value,
                 'current_w_pct': current_w_pct,
                 'target_w_pct': target_w * 100.0,
                 'delta_chf': target_value - current_value,
                 'price_chf': price_chf,
             })
+
+        # Post-trade weight against the post-trade NAV (holdings +
+        # new capital). One formula, applied at every action site.
+        def achievable_pct(post_value_chf):
+            if target_total <= 0:
+                return 0.0
+            return post_value_chf / target_total * 100.0
 
         lower, upper = self.constraints.rebalance_band_chf
 
@@ -239,6 +247,7 @@ class Rebalancer:
                     shares=0, est_cost_chf=0.0,
                     current_wt_pct=d['current_w_pct'],
                     target_wt_pct=d['target_w_pct'],
+                    achievable_wt_pct=achievable_pct(d['current_value']),
                     note='Overweight but <1 share to reduce'))
                 continue
             proceeds = shares * d['price_chf']
@@ -248,6 +257,7 @@ class Rebalancer:
                 shares=shares, est_cost_chf=proceeds,
                 current_wt_pct=d['current_w_pct'],
                 target_wt_pct=d['target_w_pct'],
+                achievable_wt_pct=achievable_pct(d['current_value'] - proceeds),
                 note='Only if held >6 months'))
 
         # BUY pool augments new_capital with REDUCE proceeds
@@ -258,28 +268,35 @@ class Rebalancer:
             + total_reduce_chf
             - target_cash_chf)
 
+        # Proportional fill: when the pool cannot cover every
+        # gap, each underweight ticker gets the same fraction of
+        # its gap, so near-equal gaps get near-equal funding and
+        # sort order no longer decides who is starved. The sort
+        # is kept only for stable display order.
         underweight = sorted(
             [d for d in deltas if d['delta_chf'] > upper],
             key=lambda d: -d['delta_chf'])
-        remaining = buy_pool
+        total_gap_chf = sum(d['delta_chf'] for d in underweight)
+        if total_gap_chf > 0:
+            fill_ratio = min(1.0, buy_pool / total_gap_chf)
+        else:
+            fill_ratio = 0.0
         bought_tickers = set()
         for d in underweight:
-            if remaining <= 0:
-                break
-            alloc = min(remaining, d['delta_chf'])
+            alloc = fill_ratio * d['delta_chf']
             shares = 0
             if d['price_chf'] > 0:
                 shares = int(alloc / d['price_chf'])
-                alloc = shares * d['price_chf']
             if shares <= 0:
                 continue
+            cost = shares * d['price_chf']
             actions.append(RebalancingAction(
                 ticker=d['ticker'], action='BUY',
-                shares=shares, est_cost_chf=alloc,
+                shares=shares, est_cost_chf=cost,
                 current_wt_pct=d['current_w_pct'],
                 target_wt_pct=d['target_w_pct'],
+                achievable_wt_pct=achievable_pct(d['current_value'] + cost),
                 note=''))
-            remaining -= alloc
             bought_tickers.add(d['ticker'])
 
         # Underweight tickers we couldn't BUY become HOLD
@@ -291,6 +308,7 @@ class Rebalancer:
                 shares=0, est_cost_chf=0.0,
                 current_wt_pct=d['current_w_pct'],
                 target_wt_pct=d['target_w_pct'],
+                achievable_wt_pct=achievable_pct(d['current_value']),
                 note='Underweight but no capital available'))
 
         # In-band HOLDs
@@ -299,6 +317,7 @@ class Rebalancer:
                 actions.append(RebalancingAction(
                     ticker=d['ticker'], action='HOLD',
                     shares=0, est_cost_chf=0.0,
+                    achievable_wt_pct=achievable_pct(d['current_value']),
                     current_wt_pct=d['current_w_pct'],
                     target_wt_pct=d['target_w_pct'],
                     note=''))
@@ -318,12 +337,16 @@ class Rebalancer:
             A CASH RebalancingAction whose ``est_cost_chf`` is
             the target cash CHF magnitude.
         """
-        target_cash_chf = float(target_w) * float(target_total)
+        target_cash_chf = max(0.0, float(target_w) * float(target_total))
+        achievable_wt_pct = 0.0
+        if target_total > 0:
+            achievable_wt_pct = target_cash_chf / target_total * 100.0
         return RebalancingAction(
             ticker=cash_ticker,
             action='CASH',
             shares=0,
-            est_cost_chf=max(0.0, target_cash_chf),
+            est_cost_chf=target_cash_chf,
             current_wt_pct=0.0,
             target_wt_pct=float(target_w) * 100.0,
+            achievable_wt_pct=achievable_wt_pct,
             note=cash_action_note)

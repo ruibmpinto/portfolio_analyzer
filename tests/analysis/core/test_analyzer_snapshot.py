@@ -186,3 +186,36 @@ def test_panel_raises_when_held_ticker_missing_from_cache(analyzer):
     del analyzer._market_data['AMZN']
     with pytest.raises(RuntimeError, match='AMZN'):
         analyzer.get_price_panel()
+
+
+def test_fetch_raises_when_provider_has_no_data(
+        monkeypatch, fake_data_provider):
+    """A held ticker the provider cannot serve must be fatal.
+
+    Per the no-silent-defaults policy the fetch loop no longer
+    warns-and-continues; a data-less held ticker raises so the
+    symbol/ISIN mapping gets fixed rather than silently dropped.
+    """
+    base = datetime(2024, 1, 15)
+    monkeypatch.setattr(
+        CSVLoader, 'load_csv_degiro',
+        lambda self, path: [
+            Transaction(
+                ticker='BADX', operation='buy', date=base,
+                price=10.0, amount=1, fee=0.0,
+                auto_fx_fee=0.0, currency='USD')])
+    monkeypatch.setattr(
+        CSVLoader, 'load_csv_ibkr', lambda self, path: [])
+
+    def _raise_for_badx(ticker, start, end):
+        raise ValueError(f'No price data for {ticker}')
+    monkeypatch.setattr(
+        fake_data_provider, 'get_price_history', _raise_for_badx)
+
+    a = PortfolioAnalyzer(
+        degiro_csv_file_path='ignored.csv',
+        ibkr_csv_file_path=None,
+        data_provider=fake_data_provider,
+        base_currency='CHF')
+    with pytest.raises(RuntimeError, match='BADX'):
+        a.get_holdings_snapshot()

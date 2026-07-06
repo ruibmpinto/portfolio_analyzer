@@ -27,7 +27,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from src.dashboard_api import config
 from src.dashboard_api.context import DashboardContext
 from src.dashboard_api.routes import (
-    holdings, meta, overview, sells, strategies)
+    holdings, meta, overview, rules, safe_harbor,
+    sells, stops, strategies)
 
 
 # Tauri WebViews load assets from tauri://localhost in production
@@ -67,6 +68,9 @@ def create_app(ctx: Optional[DashboardContext] = None) -> FastAPI:
     app.include_router(holdings.router)
     app.include_router(sells.router)
     app.include_router(strategies.router)
+    app.include_router(rules.router)
+    app.include_router(stops.router)
+    app.include_router(safe_harbor.router)
 
     @app.get('/api/health')
     def _health():

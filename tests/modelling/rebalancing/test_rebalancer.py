@@ -153,3 +153,52 @@ def test_rebalancer_passes_categories_to_analyzer():
         ticker_categories=cats)
     rb.propose()
     assert captured['categories'] == cats
+
+
+def test_buy_allocation_is_proportional_not_greedy():
+    """Equal gaps + equal prices -> equal share counts.
+
+    A and B are underweight by the same amount at the same
+    price, funded by a pool too small to cover both gaps. The
+    old greedy fill handed the first ticker its full gap and
+    starved the second (23 vs 17 shares here); proportional fill
+    splits the pool by gap, so both get the same allocation.
+    """
+    holdings = _holdings({'A': 10.0, 'B': 10.0, 'C': 80.0})
+    prices = pd.DataFrame({
+        'A': [100.0] * 3, 'B': [100.0] * 3, 'C': [100.0] * 3},
+        index=pd.date_range('2024-01-01', periods=3))
+    analyzer = _FakeAnalyzer(holdings, prices)
+    rb = Rebalancer(
+        analyzer, get_strategy('equal_weight'),
+        RebalanceConstraints(new_capital_chf=0.0))
+    plan = rb.propose()
+    by_ticker = {a.ticker: a for a in plan.actions}
+    assert by_ticker['A'].action == 'BUY'
+    assert by_ticker['B'].action == 'BUY'
+    assert by_ticker['A'].shares == by_ticker['B'].shares
+
+
+def test_achievable_wt_pct_between_current_and_target():
+    """Underfunded BUY reaches an achievable weight below target.
+
+    The achievable weight equals the post-trade value over the
+    post-trade NAV, and sits between the current and the
+    aspirational target weight when the buy is only partly
+    funded.
+    """
+    holdings = _holdings({'A': 10.0, 'B': 10.0, 'C': 80.0})
+    prices = pd.DataFrame({
+        'A': [100.0] * 3, 'B': [100.0] * 3, 'C': [100.0] * 3},
+        index=pd.date_range('2024-01-01', periods=3))
+    analyzer = _FakeAnalyzer(holdings, prices)
+    rb = Rebalancer(
+        analyzer, get_strategy('equal_weight'),
+        RebalanceConstraints(new_capital_chf=0.0))
+    plan = rb.propose()
+    a = {x.ticker: x for x in plan.actions}['A']
+    assert a.current_wt_pct < a.achievable_wt_pct < a.target_wt_pct
+    # Post-trade value / post-trade NAV, in percent. No new
+    # capital, so NAV stays 10000.
+    expected = (1000.0 + a.est_cost_chf) / 10000.0 * 100.0
+    assert a.achievable_wt_pct == pytest.approx(expected)

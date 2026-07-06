@@ -306,6 +306,49 @@ class Portfolio:
             raise ValueError("No transactions in portfolio")
         return self.transactions[-1].date
 
+    def get_turnover(
+        self,
+        since: Optional[datetime] = None,
+        until: Optional[datetime] = None,
+        ops: Tuple[str, ...] = ('buy', 'sell')) -> Dict[str, float]:
+        """Per-currency notional traded in a date window.
+
+        Sums ``abs(total_cost)`` across every transaction whose
+        operation is in ``ops`` and whose date falls in
+        ``[since, until]``. Turnover is always unsigned — the
+        magnitude of money that changed hands, useful for the
+        Swiss safe-harbor 5x-portfolio-value check.
+
+        Args:
+            since: Inclusive lower bound. None means no lower
+                bound (walks all history from the start).
+            until: Inclusive upper bound. None means no upper
+                bound (walks all history to the end).
+            ops: Operation types to include. Default
+                ``('buy', 'sell')`` matches the safe-harbor
+                turnover definition; pass a broader tuple to
+                include dividends or tax if a caller ever needs
+                a full-cashflow turnover.
+
+        Returns:
+            Dict mapping currency -> summed ``|total_cost|``.
+            Currencies with no in-window activity are absent.
+        """
+        # Accumulator: currency -> running |total_cost|
+        totals: Dict[str, float] = {}
+        for t in self.transactions:
+            if t.operation not in ops:
+                continue
+            # Inclusive date bounds; None disables the bound
+            if since is not None and t.date < since:
+                continue
+            if until is not None and t.date > until:
+                continue
+            totals[t.currency] = (
+                totals.get(t.currency, 0.0) + abs(t.total_cost))
+        # Return
+        return totals
+
     def _sum_by_currency(
         self, operation: str, signed: bool = False) -> Dict[str, float]:
         """Per-currency sum of `total_cost` for one operation.
@@ -315,19 +358,17 @@ class Portfolio:
         natural sign (sell proceeds are positive, tax is
         negative, dividend is positive).
         """
-        # Accumulator: currency -> running total
+        # Unsigned all-history case is exactly turnover for one op
+        if not signed:
+            return self.get_turnover(
+                since=None, until=None, ops=(operation,))
+        # Signed path: preserve natural sign of `total_cost`
         totals: Dict[str, float] = {}
         for t in self.transactions:
-            # Skip transactions of the wrong operation type
             if t.operation != operation:
                 continue
-            # Keep the sign when requested; otherwise magnitude only
-            if signed:
-                v = t.total_cost
-            else:
-                v = abs(t.total_cost)
-            # Add to the bucket for this trade's currency
-            totals[t.currency] = totals.get(t.currency, 0.0) + v
+            totals[t.currency] = (
+                totals.get(t.currency, 0.0) + t.total_cost)
         # Return
         return totals
 

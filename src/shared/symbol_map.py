@@ -21,7 +21,8 @@ ibkr_symbol_map
 
 
 ibkr_symbol_map = {
-    'HOLNz': 'HOLN.SW',     # Holcim Ltd, ISIN CH0012214059
+    'HOLNz': 'HOLN.SW',     # Holcim Ltd (Trades section form)
+    'HOLN': 'HOLN.SW',      # Holcim Ltd (Dividends description form)
     'SMICHA': 'SMICHA.SW',  # UBS ETF SMI, ISIN CH0017142719
     'VUAA': 'VUAA.L',       # Vanguard S&P 500 UCITS ETF, LSE
 }

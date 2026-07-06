@@ -12,8 +12,10 @@ src/
 ├── analysis/       # STATIC : read existing portfolio, value it, report on it
 ├── modelling/      # FORWARD : Monte Carlo, rebalancing, options pricing
 ├── screening/      # DISCOVERY : find candidate tickers from a universe
-└── user_scripts/   # operator-facing CLIs (the only layer allowed to import
-                    # from analysis + modelling + screening in one module)
+├── dashboard_api/  # SIDECAR : FastAPI backend for the Tauri/React dashboard
+│                   # (cross-domain consumer, like user_scripts)
+└── user_scripts/   # operator-facing CLIs + examples (a cross-domain layer:
+                    # may import analysis + modelling + screening at once)
 ```
 
 ### `src/shared/`
@@ -128,9 +130,43 @@ Answers: *what's worth looking at?*
 Self-contained: emits ranked `CandidateTicker` lists; the
 rebalancer / report consume them.
 
+### `src/dashboard_api/` — FastAPI sidecar
+
+Serves live portfolio analytics to the Tauri-shelled React
+frontend in `dashboard/`. Spawned as a child process by the
+Tauri shell at startup; prints its chosen port as the first
+stdout line (`DASHBOARD_PORT` env var, or `0` for an ephemeral
+port) so the Rust parent can wire up the WebView's `API_BASE`.
+
+- `server.py` — `create_app(ctx=None)` builds the FastAPI app,
+  registers routes, attaches a shared `DashboardContext`, and
+  sets CORS for `tauri://localhost` + the Vite dev origins.
+  `main()` allocates the port, prints it, runs uvicorn.
+- `config.py` — env-overridable knobs (statement paths, ports,
+  numeric defaults), resolved relative to the project root.
+- `context.py` — `DashboardContext`: builds the
+  `PortfolioAnalyzer` + `DataProvider` shared across requests.
+- `cache.py` — singleton TTL-cache for analyzer-derived
+  snapshots.
+- `routes/` — HTTP handlers: `GET /api/overview`,
+  `/api/holdings`, `/api/strategies`, `/api/sells`, `/api/meta`,
+  plus `POST /api/rebalance-done` and `/api/refresh`.
+- `services/` — domain logic composed by the routes:
+  `fees`, `lots`, `benchmarks`, `annual_returns`, `income`,
+  `rebalance_log`, `strategy_cagr`.
+
+Cross-domain consumer: imports from `shared`, `analysis.core`,
+`analysis.loaders`, and `modelling` (rebalancing + monte_carlo).
+Same privilege tier as `report.py` / `user_scripts`.
+
 ### `src/user_scripts/` — operator-facing entry points
 
-- `run_analysis_dashboard.py` — interactive analyser dashboard.
+- `run_analysis_dashboard.py` — render the matplotlib dashboard
+  PNG to `results/dashboard/{today}/dashboard.png` from the
+  latest broker statements. Static output, not interactive.
+- `run_dashboard_dev.py` — launch the `dashboard_api` sidecar
+  (port 8000) plus the Vite dev server (`npm run dev`), killing
+  stale port-holders first; sidecar dies when Vite exits.
 - `refresh_screener_cache.py` — populate
   `data/screener_cache/<exchange>/` shards from yfinance.
   CLI: `--exchange EXCHANGE_CODE` or `--all`, `--resume`,
@@ -145,8 +181,12 @@ rebalancer / report consume them.
   cost-on-off / contribution / candidates JSON / output path.
   Writes a 4-sheet Excel (`Plan`, `Summary`, `Percentiles`,
   `TerminalDistribution`).
+- `examples/` — standalone demo scripts (not part of the
+  operational pipeline): `basic_analysis`, `advanced_analysis`,
+  `criteria_demo`, `exchange_provider_demo`,
+  `fundamental_fetcher_demo`, `options_greeks_example`.
 
-The only layer permitted to import across domains.
+A cross-domain layer, alongside `report.py` and `dashboard_api`.
 
 ## Boundary rules
 
@@ -157,16 +197,21 @@ The only layer permitted to import across domains.
    each other, except: `modelling/` may import
    `analysis.core.{transaction,portfolio,analyzer}` and
    `analysis.loaders` from the frozen reference surface.
-4. `src/analysis/report.py` and `src/user_scripts/*.py` are
-   the only modules allowed to import from two or more
-   domains in a single file.
+4. `src/analysis/report.py`, `src/user_scripts/*.py`, and
+   `src/dashboard_api/*.py` are the only modules allowed to
+   import from two or more domains in a single file.
+   `dashboard_api` may import `shared`, `analysis.core`,
+   `analysis.loaders`, and `modelling`.
 
-Verify with:
+Verify with (each grep must stay empty; `dashboard_api` and
+`user_scripts` are excluded as consumer layers, and `report.py`
+is the one authorized cross-domain module inside `analysis`):
 
 ```bash
 grep -rn "from src.analysis"   src/modelling src/screening src/shared
 grep -rn "from src.modelling"  src/screening src/shared
-grep -rn "from src.screening"  src/analysis  src/modelling src/shared
+grep -rn "from src.screening"  src/analysis src/modelling src/shared \
+    --exclude=report.py
 ```
 
 ## Quick start
@@ -254,7 +299,8 @@ print(greeks)
   `docs/superpowers/{specs,plans}/` for refactor history
 - `refs/` — finance papers and reference screenshots
 - `tasks/` — refactor progress log (`todo.md`) and lessons
-- `dashboard/` — separate Vite/React frontend (decoupled)
+- `dashboard/` — Tauri-shelled Vite/React frontend; consumes
+  the `src/dashboard_api` sidecar (see `run_dashboard_dev.py`)
 - `API/` — IB gateway / TWS installers
 - `_OLD/` — deprecated legacy code kept for reference; not
   imported by anything in `src/`

@@ -767,15 +767,18 @@ class PortfolioAnalyzer:
                 except YFRateLimitError:
                     # Transient: surface so the caller can retry
                     raise
-                except YFPricesMissingError:
-                    # Delisted / no listing on Yahoo; expected for
-                    # some IBKR mutual-fund ISINs. Skip prices, splits,
-                    # and dividend factors together.
-                    continue
                 except Exception as e:
-                    warnings.warn(
-                        f"Unexpected error fetching market data "
-                        f"for {ticker}: {type(e).__name__}: {e}")
+                    # A held ticker with no market data is always a
+                    # defect (bad symbol / ISIN mapping), never
+                    # expected: every ticker here is a real, non-None
+                    # symbol (None-mapped ISINs are filtered at parse
+                    # time). Fail loudly rather than silently drop it
+                    # from valuation.
+                    raise RuntimeError(
+                        f"No market data for held ticker {ticker!r}: "
+                        f"{type(e).__name__}: {e}. Fix the "
+                        f"symbol/ISIN mapping or remove it from the "
+                        f"transaction set.") from e
 
             # Yfinance returns UK pence (GBp) for LSE-listed
             # GBP equities. Our trades are stored in actual GBP

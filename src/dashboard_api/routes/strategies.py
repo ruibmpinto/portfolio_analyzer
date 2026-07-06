@@ -183,6 +183,7 @@ def _build_strategy_block(
                 'est_cost_chf': a.est_cost_chf,
                 'current_wt_pct': a.current_wt_pct,
                 'target_wt_pct': a.target_wt_pct,
+                'achievable_wt_pct': a.achievable_wt_pct,
                 'note': a.note,
             }
             for a in plan.actions],

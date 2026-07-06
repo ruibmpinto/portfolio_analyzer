@@ -34,7 +34,7 @@ from typing import Dict, Optional
 
 from src.modelling.monte_carlo.cost_model import (
     TransactionCostModel, ibkr_default_cost_model)
-from src.shared.venue_taxes import lookup_venue
+from src.shared.venue_taxes import lookup_schedule
 
 
 def breakeven_gap(
@@ -100,7 +100,8 @@ def breakeven_gap(
     # Half-spread is a market-friction cost, not a broker fee;
     # it comes from venue_taxes so all venue references stay
     # in one place.
-    half_spread_bps = lookup_venue(ticker).half_spread_bps
+    half_spread_bps = lookup_schedule(
+        ticker, currency).half_spread_bps
 
     # Roundtrip breakeven: both legs' fees plus two half-spreads
     breakeven_bps = (

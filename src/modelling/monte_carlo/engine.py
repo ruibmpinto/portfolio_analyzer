@@ -389,7 +389,7 @@ class MonteCarloEngine:
             step_cost = np.zeros(holdings.shape[0])
             for k, ticker in enumerate(equity_tickers):
                 currency = self._currency_of(ticker)
-                step_cost += self.cost_model.cost_chf_array(
+                step_cost += self.cost_model.cost_chf(
                     trade_value[:, k], ticker, currency)
             if cumulative_costs is not None:
                 cumulative_costs += step_cost

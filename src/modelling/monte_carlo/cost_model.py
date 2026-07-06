@@ -2,20 +2,21 @@
 
 Two entry points serve different callers:
 
-- ``cost_chf`` and its vectorised sibling ``cost_chf_array`` return
-  a single CHF cost for symmetric-roundtrip MC rebalance
-  simulation. Used by ``MonteCarloEngine``. Because share counts
-  are not available in the MC hot path, a bps-of-notional
-  commission proxy is used instead of the per-share IBKR schedule.
+- ``cost_chf`` returns the symmetric CHF cost for MC rebalance
+  simulation. Accepts either a scalar notional or a 1-D array
+  (NumPy broadcasts uniformly); the shape of the return follows
+  the shape of the input. Used by ``MonteCarloEngine``. Because
+  share counts are not available in the MC hot path, a bps-of-
+  notional commission proxy is used instead of the per-share
+  IBKR schedule.
 - ``fees_breakdown`` returns a per-component CHF breakdown for the
   dashboard's forward-cost preview and breakeven-gap calculator.
-  Uses the exact per-share IBKR schedule; requires ``shares``,
-  ``trade_value_native``, and ``fx_rate_to_chf`` from the caller.
+  Uses the exact per-(venue, currency) schedule from ``venue_taxes``.
 
-Both entry points consume ``src.shared.venue_taxes`` for
-statutory taxes (UK stamp, FR/IT FTT, Swiss federal stamp) and
-for the half-spread heuristic — one source of truth for both
-broker and market-microstructure data.
+Both entry points consume ``src.shared.venue_taxes`` for the
+per-venue statutory tax, IBKR Tiered commission constants, US
+regulatory-fee flag, and half-spread heuristic — one source of
+truth for every venue-specific number.
 """
 
 from dataclasses import dataclass
@@ -23,7 +24,8 @@ from typing import Dict
 
 import numpy as np
 
-from src.shared.venue_taxes import lookup_venue
+from src.shared.venue_taxes import (
+    is_ntf_mutual_fund, lookup_schedule)
 
 
 bps_per_unit = 1e4
@@ -32,129 +34,84 @@ chf_currency = 'CHF'
 
 @dataclass(frozen=True)
 class TransactionCostModel:
-    """IBKR US-Tiered trade cost model, defaults for Swiss residents.
+    """Broker-side constants that don't fit the per-venue schedule.
 
-    Per-share fields express IBKR's US Tiered top-tier retail
-    schedule and drive ``fees_breakdown``. The two bps fields
-    (``commission_bps``, ``commission_min_chf``) are a coarser
-    fallback for ``cost_chf`` where share counts are unavailable;
-    the default ``commission_bps=7`` matches the per-share default
-    at ~USD 50/share so MC output stays close to reality.
+    Every venue-specific fee constant lives on ``VenueSchedule`` in
+    ``venue_taxes``. This class carries only the small set of
+    numbers that are not venue-parameterised: US regulatory rates
+    (SEC + FINRA are fixed statutory constants) and the MC-only
+    FX/commission-bps fallback used by ``cost_chf``.
 
     Attributes:
-        commission_per_share_native: IBKR US-Tiered commission per
-            share (USD 0.0035/share for top-tier retail).
-        commission_min_native: Minimum per-order commission in
-            native currency (USD 0.35).
-        commission_cap_pct: Fraction of trade value at which
-            commission is capped (0.01 = 1% cap).
-        exchange_clearing_per_share_native: Per-share sum of
-            NSCC/DTC clearing (0.0002), FINRA CAT (0.000003),
-            and average exchange remove-liquidity fees (~0.003)
-            for IBKR US trades.
         sec_fee_rate: SEC Section 31 fee as a fraction of sale
-            value (0.0000206 for 2024-2025). Applied to sells only.
+            value (0.0000206 for 2024-2025). Applied to sells on
+            US-listed venues only.
         finra_taf_per_share: FINRA Trading Activity Fee per share
-            sold (0.000195). Applied to sells only.
+            sold (0.000195). Applied to US sells only.
         fx_cost_bps: IBKR FX conversion cost in bps of notional
             (0.2 bps). Consumed only by ``cost_chf`` (Monte Carlo);
-            ``fees_breakdown`` assumes the sell and rebuy legs
-            run in the same currency and does not charge FX.
+            ``fees_breakdown`` assumes matched-currency legs and
+            does not charge FX.
         commission_bps: Bps-of-notional commission for
-            ``cost_chf``'s share-agnostic path (7.0). Matches
-            the per-share model at ~USD 50/share.
+            ``cost_chf``'s share-agnostic path (7.0). Matches the
+            per-share model at ~USD 50/share.
         commission_min_chf: Minimum CHF commission for
-            ``cost_chf`` (1.5 CHF). Slightly conservative
-            relative to USD 0.35 * FX; kept for MC baseline
-            stability.
+            ``cost_chf`` (1.5 CHF).
     """
 
-    # IBKR US Tiered per-share schedule (used by fees_breakdown)
-    commission_per_share_native: float = 0.0035
-    commission_min_native: float = 0.35
-    commission_cap_pct: float = 0.01
-    exchange_clearing_per_share_native: float = 0.0034
+    # US regulatory (fixed statutory rates, not per-venue)
     sec_fee_rate: float = 0.0000206
     finra_taf_per_share: float = 0.000195
 
-    # FX conversion (Monte Carlo cost_chf only; fees_breakdown
-    # assumes matched-currency legs and does not charge FX).
+    # FX conversion (MC only; fees_breakdown assumes matched-currency legs)
     fx_cost_bps: float = 2.0
 
-    # Bps-of-notional fallback (used by cost_chf / cost_chf_array)
+    # Bps-of-notional MC fallback (share counts unavailable in MC path)
     commission_bps: float = 7.0
     commission_min_chf: float = 1.5
 
     def cost_chf(
         self,
-        trade_value_chf: float,
-        ticker: str,
-        currency: str) -> float:
-        """Symmetric CHF cost for MC rebalance simulation.
-
-        Averages the venue's buy/sell taxes so the returned cost
-        is direction-agnostic (MC does not distinguish sides on
-        rebalance steps). Uses ``venue_taxes.half_spread_bps``
-        for a venue-aware market-friction proxy.
-
-        Args:
-            trade_value_chf: Notional in CHF; sign is irrelevant.
-            ticker: Yahoo-style ticker; drives the venue lookup.
-            currency: ISO-4217 trade currency. ``'CHF'``
-                suppresses the FX cost component.
-
-        Returns:
-            Total CHF cost = commission + spread + venue tax
-            + FX cost.
-        """
-        notional = abs(float(trade_value_chf))
-        commission = max(
-            notional * self.commission_bps / bps_per_unit,
-            self.commission_min_chf)
-        venue = lookup_venue(ticker)
-        # MC has no side; use symmetric average per roundtrip step
-        avg_tax_bps = (venue.buy_bps + venue.sell_bps) / 2.0
-        tax = notional * avg_tax_bps / bps_per_unit
-        # Half-spread is a market cost; retained here so MC still
-        # captures round-trip friction end-to-end.
-        spread = notional * venue.half_spread_bps / bps_per_unit
-        fx = 0.0
-        if currency != chf_currency:
-            fx = notional * self.fx_cost_bps / bps_per_unit
-        return commission + spread + tax + fx
-
-    def cost_chf_array(
-        self,
         trade_values_chf,
         ticker: str,
         currency: str):
-        """Vectorised cost calculation across multiple paths.
+        """Symmetric CHF cost for MC rebalance simulation.
 
-        Equivalent to applying ``cost_chf`` element-wise to
-        ``trade_values_chf``, but executes in a single NumPy
-        expression to avoid Python-level looping in
-        performance-critical Monte Carlo paths.
+        Accepts either a scalar notional or a 1-D array; NumPy
+        broadcasts uniformly and the return shape follows the
+        input. Averages the venue's buy/sell taxes so the returned
+        cost is direction-agnostic (MC does not distinguish sides
+        on rebalance steps). Half-spread and tax bps come from
+        ``VenueSchedule``; commission uses the coarse bps-of-
+        notional proxy since MC has no share counts.
 
         Args:
-            trade_values_chf: 1D numpy array of trade
-                notionals in CHF. Sign is irrelevant.
-            ticker: Exchange symbol (used to detect Swiss
-                listings).
-            currency: ISO-4217 listing currency.
+            trade_values_chf: Trade notional(s) in CHF, scalar or
+                array-like. Sign is irrelevant.
+            ticker: Yahoo-style ticker; drives the schedule lookup.
+            currency: ISO-4217 trade currency. ``'CHF'`` suppresses
+                the FX cost component.
 
         Returns:
-            1D numpy array of CHF costs, same shape as
-            ``trade_values_chf``.
+            CHF cost with the same shape as the input. All-zero
+            when ``ticker`` is an IBKR NTF fund.
         """
         notional = np.abs(np.asarray(
             trade_values_chf, dtype=float))
+        # NTF mutual funds: zero broker fee across the vector
+        if is_ntf_mutual_fund(ticker):
+            return np.zeros_like(notional)
         commission = np.maximum(
             notional * self.commission_bps / bps_per_unit,
             self.commission_min_chf)
-        venue = lookup_venue(ticker)
-        avg_tax_bps = (venue.buy_bps + venue.sell_bps) / 2.0
+        sched = lookup_schedule(ticker, currency)
+        # MC has no side; use symmetric average per roundtrip step
+        avg_tax_bps = (
+            sched.tax_buy_bps + sched.tax_sell_bps) / 2.0
         tax = notional * avg_tax_bps / bps_per_unit
-        spread = notional * venue.half_spread_bps / bps_per_unit
+        # Half-spread is a market cost; retained here so MC still
+        # captures round-trip friction end-to-end.
+        spread = notional * sched.half_spread_bps / bps_per_unit
         if currency != chf_currency:
             fx = notional * self.fx_cost_bps / bps_per_unit
         else:
@@ -171,36 +128,34 @@ class TransactionCostModel:
         fx_rate_to_chf: float) -> Dict[str, float]:
         """Per-component CHF fee breakdown for a single trade.
 
-        Every component is modelled at its natural granularity
-        (per-share for broker fees, per-value for taxes) then
-        converted to CHF via ``fx_rate_to_chf``. ``side``
-        determines which venue-tax leg fires: UK stamp and FR/IT
-        FTT tax the buy leg only; Swiss federal stamp taxes both.
+        One uniform formula, one schedule lookup. Every venue-specific
+        constant lives on the ``VenueSchedule`` row; this method just
+        composes commission, broker per-share extras, US regulatory
+        (sell-side), and statutory venue tax. Buy and sell legs are
+        assumed to run in the same currency (no FX component).
 
         Args:
             shares: Positive share count; fractional shares OK.
-            trade_value_native: ``shares * price_native``,
-                positive, in the trade's native currency.
+            trade_value_native: ``shares * price_native``, positive,
+                in the trade's native currency.
             currency: ISO-4217 trade currency.
-            ticker: Yahoo-style ticker; drives the venue lookup.
+            ticker: Yahoo-style ticker.
             side: ``'buy'`` or ``'sell'``. Any other value raises
-                ``ValueError`` — venue taxes are asymmetric, so a
-                silent default would produce wrong numbers.
+                ``ValueError`` — venue taxes are asymmetric.
             fx_rate_to_chf: Native-to-CHF conversion rate. Pass
-                ``1.0`` when the trade is already CHF-denominated.
+                ``1.0`` when the trade is CHF-denominated.
 
         Returns:
-            Dict with keys ``commission_chf``,
-            ``exchange_clearing_chf``, ``regulatory_chf``,
-            ``venue_tax_chf``, ``total_chf``, ``total_bps``.
-            The four component fields sum to ``total_chf``.
-            ``total_bps`` is 0.0 when ``trade_value_native`` is 0
-            (mathematically correct, not a silent fallback). No
-            FX component: buy and sell legs are assumed to run
-            in the same currency.
+            Dict with keys ``commission_chf``, ``broker_extras_chf``,
+            ``regulatory_chf``, ``venue_tax_chf``, ``total_chf``,
+            ``total_bps``. The four components sum to ``total_chf``.
+            NTF mutual funds return all zeros.
 
         Raises:
             ValueError: If ``side`` is not ``'buy'`` or ``'sell'``.
+            RuntimeError: If no schedule row matches
+                ``(ticker, currency)`` — data-mapping error surfaced
+                loudly (no silent default).
         """
         if side not in ('buy', 'sell'):
             raise ValueError(
@@ -208,54 +163,53 @@ class TransactionCostModel:
         notional = float(trade_value_native)
         shares_f = float(shares)
 
-        # IBKR commission: max(per-share, minimum), capped at
-        # a percentage of trade value
-        commission_native = max(
-            self.commission_per_share_native * shares_f,
-            self.commission_min_native)
+        # NTF mutual funds pay zero broker fee at IBKR; short-circuit
+        # before the schedule lookup so the caller doesn't need a
+        # dedicated table row per fund.
+        if is_ntf_mutual_fund(ticker):
+            return self._zero_breakdown(notional * fx_rate_to_chf)
+
+        sched = lookup_schedule(ticker, currency)
+
+        # Commission: sum both rate types (each schedule row has
+        # one nonzero — US uses per-share, non-US uses bps).
+        # Cap applies FIRST, then min. Order matters: on very small
+        # trades the cap can fall below the min, and IBKR bills the
+        # min in that case (observed on SMICHA.SW at CHF 267 -> min).
+        commission_native = (
+            sched.commission_bps * notional / bps_per_unit
+            + sched.commission_per_share_native * shares_f)
         commission_native = min(
             commission_native,
-            self.commission_cap_pct * notional)
+            sched.commission_cap_pct * notional)
+        commission_native = max(
+            commission_native, sched.commission_min_native)
 
-        # Exchange + clearing + CAT: per-share, side-agnostic
-        exchange_clearing_native = (
-            self.exchange_clearing_per_share_native * shares_f)
+        # Broker per-share extras (NSCC/DTC/CAT on US; zero elsewhere)
+        broker_extras_native = (
+            sched.broker_extras_per_share_native * shares_f)
 
-        # Venue determines both the statutory tax leg and whether
-        # US regulatory fees (SEC, FINRA) apply.
-        venue = lookup_venue(ticker)
-
-        # SEC Section 31 and FINRA TAF fire on US-listed sells only
-        if side == 'sell' and venue.is_us:
+        # SEC Section 31 + FINRA TAF fire on US sells only
+        if side == 'sell' and sched.charges_us_regulatory:
             regulatory_native = (
                 self.sec_fee_rate * notional
                 + self.finra_taf_per_share * shares_f)
         else:
             regulatory_native = 0.0
 
-        # Statutory venue tax: asymmetric per side (buy_bps for
-        # UK/FR/IT, both sides for Switzerland).
-        if side == 'buy':
-            venue_tax_bps = venue.buy_bps
-        else:
-            venue_tax_bps = venue.sell_bps
-        venue_tax_native = notional * venue_tax_bps / bps_per_unit
-
-        # No FX component: the breakeven / forward-cost consumers
-        # assume the sell and rebuy legs run in the same currency
-        # (holding the native-currency cash between them). IBKR
-        # bills FX conversions as separate Forex trades — those are
-        # captured by the retrospective cumulative-fee panel via
-        # ``Transaction.auto_fx_fee``, not here.
+        # Statutory venue tax: asymmetric per side
+        tax_bps = (
+            sched.tax_buy_bps if side == 'buy'
+            else sched.tax_sell_bps)
+        venue_tax_native = notional * tax_bps / bps_per_unit
 
         # Every native component converts to CHF via the same rate
         commission_chf = commission_native * fx_rate_to_chf
-        exchange_clearing_chf = (
-            exchange_clearing_native * fx_rate_to_chf)
+        broker_extras_chf = broker_extras_native * fx_rate_to_chf
         regulatory_chf = regulatory_native * fx_rate_to_chf
         venue_tax_chf = venue_tax_native * fx_rate_to_chf
         total_chf = (
-            commission_chf + exchange_clearing_chf
+            commission_chf + broker_extras_chf
             + regulatory_chf + venue_tax_chf)
 
         # bps of the CHF trade value; guard against zero notional
@@ -267,21 +221,33 @@ class TransactionCostModel:
 
         return {
             'commission_chf': commission_chf,
-            'exchange_clearing_chf': exchange_clearing_chf,
+            'broker_extras_chf': broker_extras_chf,
             'regulatory_chf': regulatory_chf,
             'venue_tax_chf': venue_tax_chf,
             'total_chf': total_chf,
             'total_bps': total_bps,
         }
 
+    @staticmethod
+    def _zero_breakdown(trade_value_chf: float) -> Dict[str, float]:
+        """All-zero breakdown for NTF mutual funds."""
+        # trade_value_chf is unused today but reserved for the
+        # future case where NTFs still incur a tiny custody fee.
+        return {
+            'commission_chf': 0.0,
+            'broker_extras_chf': 0.0,
+            'regulatory_chf': 0.0,
+            'venue_tax_chf': 0.0,
+            'total_chf': 0.0,
+            'total_bps': 0.0,
+        }
+
 
 def ibkr_default_cost_model() -> TransactionCostModel:
     """IBKR defaults for a Swiss tax-resident retail investor.
 
-    Numbers reflect IBKR US Tiered top-retail-tier commissions.
-    European IBKR trades follow a bps-of-value schedule which the
-    current dataclass does not yet model; a sibling model will
-    land alongside when that broker/venue combination is added.
+    Numbers reflect IBKR Tiered top-retail-tier commissions across
+    every venue documented in ``venue_taxes.schedule_table()``.
 
     Returns:
         TransactionCostModel with dataclass field defaults.

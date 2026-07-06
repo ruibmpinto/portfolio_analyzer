@@ -34,7 +34,8 @@ from src.analysis.loaders.csv_loader import (
     CSVLoader, default_ibkr_statement_path)
 from src.modelling.monte_carlo.cost_model import (
     TransactionCostModel, ibkr_default_cost_model)
-from src.shared.venue_taxes import lookup_venue
+from src.shared.venue_taxes import (
+    is_ntf_mutual_fund, lookup_schedule)
 
 
 sample_size_per_side = 10
@@ -137,7 +138,10 @@ def _row_diagnostics(
         'modeled': modeled,
         'delta': delta,
         'delta_bps': delta_bps,
-        'is_us': lookup_venue(t.ticker).is_us,
+        'is_us': (
+            False if is_ntf_mutual_fund(t.ticker)
+            else lookup_schedule(
+                t.ticker, t.currency).charges_us_regulatory),
         'breakdown': breakdown,
     }
 

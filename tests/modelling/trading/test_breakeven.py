@@ -3,7 +3,7 @@
 import pytest
 
 from src.modelling.trading.breakeven import breakeven_gap
-from src.shared.venue_taxes import lookup_venue
+from src.shared.venue_taxes import lookup_schedule
 
 
 def test_us_ticker_symmetric_fees_no_venue_tax():
@@ -67,13 +67,20 @@ def test_suggested_trigger_is_twice_breakeven():
 
 
 def test_half_spread_matches_venue_taxes():
-    """half_spread_bps mirrors venue_taxes.lookup_venue exactly."""
-    for ticker in ('AAPL', 'NESN.SW', 'RR.L', 'TTE.PA'):
+    """half_spread_bps mirrors venue_taxes.lookup_schedule exactly."""
+    cases = [
+        ('AAPL', 'USD'),
+        ('NESN.SW', 'CHF'),
+        ('RR.L', 'GBP'),
+        ('TTE.PA', 'EUR'),
+    ]
+    for ticker, currency in cases:
         r = breakeven_gap(
             shares=10.0, price_native=100.0,
-            currency='USD', ticker=ticker,
+            currency=currency, ticker=ticker,
             fx_rate_to_chf=1.0)
-        assert r['half_spread_bps'] == lookup_venue(ticker).half_spread_bps
+        expected = lookup_schedule(ticker, currency).half_spread_bps
+        assert r['half_spread_bps'] == expected
 
 
 def test_breakeven_composition_identity():
@@ -109,25 +116,24 @@ def test_returned_bps_all_nonneg():
 
 
 def test_custom_cost_model_used():
-    """A cost model with zeroed fees drives f_s_bps and f_b_bps to zero."""
+    """SEC + FINRA rates on the cost model flow through to sell fees.
+
+    With the refactor, per-venue commission constants live on the
+    VenueSchedule table (customised there for a different broker).
+    ``TransactionCostModel`` still owns the cross-venue statutory
+    rates (SEC, FINRA), so zeroing them here removes the sell-side
+    regulatory contribution from f_s_bps.
+    """
     from src.modelling.monte_carlo.cost_model import TransactionCostModel
-    # Zero out every broker-side fee; venue tax + spread still fire
-    zero_broker = TransactionCostModel(
-        commission_per_share_native=0.0,
-        commission_min_native=0.0,
-        commission_cap_pct=1.0,
-        exchange_clearing_per_share_native=0.0,
-        sec_fee_rate=0.0,
-        finra_taf_per_share=0.0,
-        fx_cost_bps=0.0)
-    r = breakeven_gap(
+    default = breakeven_gap(
         shares=100.0, price_native=50.0,
-        currency='USD', ticker='AAPL',
-        fx_rate_to_chf=1.0,
-        cost_model=zero_broker)
-    # AAPL has no venue tax; broker fees zeroed -> both legs zero bps
-    assert r['f_s_bps'] == 0.0
-    assert r['f_b_bps'] == 0.0
-    # breakeven collapses to pure spread cost
-    assert r['breakeven_bps'] == pytest.approx(
-        2.0 * r['half_spread_bps'])
+        currency='USD', ticker='AAPL', fx_rate_to_chf=1.0)
+    zero_regulatory = breakeven_gap(
+        shares=100.0, price_native=50.0,
+        currency='USD', ticker='AAPL', fx_rate_to_chf=1.0,
+        cost_model=TransactionCostModel(
+            sec_fee_rate=0.0, finra_taf_per_share=0.0))
+    # Buy-leg unchanged (regulatory is sell-only)
+    assert zero_regulatory['f_b_bps'] == pytest.approx(default['f_b_bps'])
+    # Sell-leg strictly lower under the zero-regulatory model
+    assert zero_regulatory['f_s_bps'] < default['f_s_bps']

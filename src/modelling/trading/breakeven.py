@@ -25,7 +25,7 @@ The minimum gap in bps is
 
     breakeven_bps = f_s_bps + f_b_bps + 2 * half_spread_bps
 
-The suggested stop-loss trigger is set at ``2 * breakeven`` — a
+The suggested stop-loss trigger is set at ``2 * breakeven`` - a
 one-times-breakeven safety margin against noise-triggered stops,
 per the strategy notes.
 """
@@ -43,7 +43,8 @@ def breakeven_gap(
     currency: str,
     ticker: str,
     fx_rate_to_chf: float,
-    cost_model: Optional[TransactionCostModel] = None
+    cost_model: Optional[TransactionCostModel] = None,
+    commission_fx_rate_to_chf: Optional[float] = None
 ) -> Dict[str, float]:
     """Compute the roundtrip breakeven gap for a stop-and-rebuy.
 
@@ -54,11 +55,17 @@ def breakeven_gap(
         currency: ISO-4217 trade currency.
         ticker: Yahoo-style ticker; drives the venue tax and
             half-spread lookup.
-        fx_rate_to_chf: Native-to-CHF conversion rate. Pass
+        fx_rate_to_chf: Trade-currency-to-CHF conversion rate. Pass
             ``1.0`` when the trade is already CHF-denominated.
         cost_model: Broker cost model. Defaults to
-            ``ibkr_default_cost_model()``; pass a Degiro-flavoured
-            sibling when one lands.
+            ``ibkr_default_cost_model()``; pass
+            ``degiro_default_cost_model()`` (or a custom one) to
+            price the trade at a different broker.
+        commission_fx_rate_to_chf: Rate for converting the broker
+            commission from its billing currency to CHF. Required
+            when the schedule row bills commission in a currency
+            other than ``currency`` (e.g. Degiro US: fee in EUR,
+            trade in USD). Ignored otherwise.
 
     Returns:
         Dict with:
@@ -74,42 +81,40 @@ def breakeven_gap(
               distance below current price
               (``2 * breakeven_bps``).
     """
-    # Fall back to the shipped IBKR defaults when no model given
     if cost_model is None:
         cost_model = ibkr_default_cost_model()
 
-    # Total notional in the trade's native currency
     trade_value_native = float(shares) * float(price_native)
 
-    # Per-leg exact breakdown from the cost model
     sell = cost_model.fees_breakdown(
         shares=shares,
         trade_value_native=trade_value_native,
         currency=currency,
         ticker=ticker,
         side='sell',
-        fx_rate_to_chf=fx_rate_to_chf)
+        fx_rate_to_chf=fx_rate_to_chf,
+        commission_fx_rate_to_chf=commission_fx_rate_to_chf)
     buy = cost_model.fees_breakdown(
         shares=shares,
         trade_value_native=trade_value_native,
         currency=currency,
         ticker=ticker,
         side='buy',
-        fx_rate_to_chf=fx_rate_to_chf)
+        fx_rate_to_chf=fx_rate_to_chf,
+        commission_fx_rate_to_chf=commission_fx_rate_to_chf)
 
     # Half-spread is a market-friction cost, not a broker fee;
     # it comes from venue_taxes so all venue references stay
-    # in one place.
+    # in one place. Passing the cost model's broker so a
+    # broker-specific half-spread override (if ever added) is
+    # honoured.
     half_spread_bps = lookup_schedule(
-        ticker, currency).half_spread_bps
+        ticker, currency, cost_model.broker).half_spread_bps
 
-    # Roundtrip breakeven: both legs' fees plus two half-spreads
     breakeven_bps = (
         sell['total_bps'] + buy['total_bps']
         + 2.0 * half_spread_bps)
 
-    # 2x breakeven trigger gives one-times-breakeven margin
-    # against a stop-out that reverses immediately
     suggested_trigger_bps = 2.0 * breakeven_bps
 
     return {

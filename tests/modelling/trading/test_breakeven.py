@@ -137,3 +137,52 @@ def test_custom_cost_model_used():
     assert zero_regulatory['f_b_bps'] == pytest.approx(default['f_b_bps'])
     # Sell-leg strictly lower under the zero-regulatory model
     assert zero_regulatory['f_s_bps'] < default['f_s_bps']
+
+
+def test_degiro_swiss_breakeven_uses_flat_fee():
+    """Degiro SIX: flat CHF 6 dominates a small-value trade's bps."""
+    from src.modelling.monte_carlo.cost_model import (
+        degiro_default_cost_model)
+    r = breakeven_gap(
+        shares=10.0, price_native=100.0,
+        currency='CHF', ticker='NESN.SW',
+        fx_rate_to_chf=1.0,
+        cost_model=degiro_default_cost_model())
+    # trade value = 1000 CHF; commission = 6 CHF = 60 bps per leg
+    assert r['f_s_bps'] == pytest.approx(60.0)
+    assert r['f_b_bps'] == pytest.approx(60.0)
+    # Half-spread 3 bps carries over from venue_taxes
+    assert r['half_spread_bps'] == 3.0
+    assert r['breakeven_bps'] == pytest.approx(
+        60.0 + 60.0 + 2.0 * 3.0)
+
+
+def test_degiro_us_breakeven_requires_commission_fx():
+    """Degiro US: EUR-billed commission needs commission_fx_rate."""
+    from src.modelling.monte_carlo.cost_model import (
+        degiro_default_cost_model)
+    r = breakeven_gap(
+        shares=100.0, price_native=50.0,
+        currency='USD', ticker='AAPL',
+        fx_rate_to_chf=0.90,
+        commission_fx_rate_to_chf=0.95,
+        cost_model=degiro_default_cost_model())
+    # trade value USD 5000 = CHF 4500 (0.90 rate). Commission
+    # EUR 2 = CHF 1.90 (0.95 rate) per leg. 1.90/4500 = 4.222 bps
+    assert r['f_b_bps'] == pytest.approx(1.90 / 4500 * 1e4)
+    assert r['f_s_bps'] == pytest.approx(1.90 / 4500 * 1e4)
+
+
+def test_degiro_uk_breakeven_stamp_dominates():
+    """Degiro RR.L: UK 50 bps stamp still lands on the buy leg."""
+    from src.modelling.monte_carlo.cost_model import (
+        degiro_default_cost_model)
+    r = breakeven_gap(
+        shares=100.0, price_native=10.0,
+        currency='GBP', ticker='RR.L',
+        fx_rate_to_chf=1.10,
+        commission_fx_rate_to_chf=0.95,
+        cost_model=degiro_default_cost_model())
+    # Buy fee > sell fee by roughly the 50 bps stamp
+    assert r['f_b_bps'] > r['f_s_bps'] + 40.0
+    assert r['breakeven_bps'] >= 50.0
